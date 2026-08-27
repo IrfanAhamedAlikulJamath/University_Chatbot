@@ -4,6 +4,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pdf_loader import load_all_pdfs
 
 
+# =========================================================
+# PATTERNS
+# =========================================================
+
 COURSE_PATTERN = re.compile(
     r"\b([A-Z]{2,}[A-Z0-9]*\d{4,})\s+([A-Z][A-Z\s&–-]+?)\s+L\s+T\s+P",
     re.IGNORECASE
@@ -14,113 +18,411 @@ UNIT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+COURSE_OUTCOMES_PATTERN = re.compile(
+    r"\bCOURSE\s+OUTCOMES\b",
+    re.IGNORECASE
+)
+
+REFERENCES_PATTERN = re.compile(
+    r"\bTEXT\s*/\s*REFERENCE\s+BOOKS\b",
+    re.IGNORECASE
+)
+
+EXAM_PATTERN = re.compile(
+    r"\bEND\s+SEMESTER\s+EXAMINATION\s+QUESTION\s+PAPER\s+PATTERN\b",
+    re.IGNORECASE
+)
+
+CREDITS_PATTERN = re.compile(
+    r"L\s+T\s+P\s+EL\s+Credits\s+Total\s+Marks\s*"
+    r"[\r\n\s]+"
+    r"\d+\s+\d+\s+\d+\s+\d+\s+(\d+)\s+\d+",
+    re.IGNORECASE
+)
+
+
+# =========================================================
+# COURSE DETECTION
+# =========================================================
 
 def detect_course(text):
+    """
+    Detect course code and course name.
+    """
+
     match = COURSE_PATTERN.search(text)
 
+    if not match:
+        return None, None
+
+    course_code = match.group(1).strip()
+    course_name = match.group(2).strip()
+
+    return course_code, course_name
+
+
+def detect_credits(text):
+    """
+    Detect the credit value from the
+    L T P EL Credits Total Marks row.
+    """
+
+    match = CREDITS_PATTERN.search(text)
+
     if match:
-        course_code = match.group(1).strip()
-        course_name = match.group(2).strip()
+        return match.group(1).strip()
 
-        return course_code, course_name
-
-    return None, None
+    return None
 
 
-def create_enriched_text(course_code, course_name, unit, chunk):
+# =========================================================
+# TEXT CLEANING
+# =========================================================
 
-    context_parts = []
+def clean_text(text):
+    """
+    Normalize text extracted from the PDF.
+    """
+
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
+
+    text = re.sub(
+        r"[ \t]+$",
+        "",
+        text,
+        flags=re.MULTILINE
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
+
+    text = re.sub(
+        r"[ \t]{2,}",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+def remove_repeated_headers(text):
+    """
+    Remove repeated university/document headers.
+    """
+
+    patterns = [
+        r"SATHYABAMA\s+INSTITUTE\s+OF\s+SCIENCE\s+AND\s+TECHNOLOGY",
+        r"SCHOOL\s+OF\s+COMPUTING",
+        r"B\.E\s+CSE\s*[–-]\s*DATA\s+SCIENCE",
+        r"REGULATIONS\s+2023",
+    ]
+
+    for pattern in patterns:
+
+        text = re.sub(
+            pattern,
+            "",
+            text,
+            flags=re.IGNORECASE
+        )
+
+    # Remove isolated page numbers.
+    text = re.sub(
+        r"(?m)^\s*\d+\s*$",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text
+    )
+
+    return text.strip()
+
+
+# =========================================================
+# SECTION DETECTION
+# =========================================================
+
+def find_sections(text):
+    """
+    Detect major academic sections on a page.
+
+    Returns:
+        [
+            (section_type, unit_name, start_position)
+        ]
+    """
+
+    sections = []
+
+    # -------------------------
+    # Units
+    # -------------------------
+
+    for match in UNIT_PATTERN.finditer(text):
+
+        sections.append(
+            (
+                "UNIT",
+                f"UNIT {match.group(1)}",
+                match.start()
+            )
+        )
+
+    # -------------------------
+    # Course Outcomes
+    # -------------------------
+
+    for match in COURSE_OUTCOMES_PATTERN.finditer(text):
+
+        sections.append(
+            (
+                "COURSE OUTCOMES",
+                None,
+                match.start()
+            )
+        )
+
+    # -------------------------
+    # References
+    # -------------------------
+
+    for match in REFERENCES_PATTERN.finditer(text):
+
+        sections.append(
+            (
+                "REFERENCES",
+                None,
+                match.start()
+            )
+        )
+
+    # -------------------------
+    # Examination Pattern
+    # -------------------------
+
+    for match in EXAM_PATTERN.finditer(text):
+
+        sections.append(
+            (
+                "EXAMINATION PATTERN",
+                None,
+                match.start()
+            )
+        )
+
+    sections.sort(
+        key=lambda item: item[2]
+    )
+
+    return sections
+
+
+# =========================================================
+# CONTEXT HEADER
+# =========================================================
+
+def build_context_header(
+    course_code=None,
+    course_name=None,
+    credits=None,
+    section=None,
+    unit=None
+):
+    """
+    Build concise structured context.
+    """
+
+    context = []
 
     if course_code:
-        context_parts.append(f"Course Code: {course_code}")
+        context.append(
+            f"Course Code: {course_code}"
+        )
 
     if course_name:
-        context_parts.append(f"Course Name: {course_name}")
+        context.append(
+            f"Course Name: {course_name}"
+        )
+
+    if credits:
+        context.append(
+            f"Credits: {credits}"
+        )
+
+    if section:
+        context.append(
+            f"Section: {section}"
+        )
 
     if unit:
-        context_parts.append(f"Unit: {unit}")
+        context.append(
+            f"Unit: {unit}"
+        )
 
-    context = "\n".join(context_parts)
+    return "\n".join(context)
 
-    if context:
-        return f"{context}\n\n{chunk}"
+
+def enrich_chunk(
+    chunk,
+    course_code=None,
+    course_name=None,
+    credits=None,
+    section=None,
+    unit=None
+):
+    """
+    Add structured metadata/context to the text
+    that will later be embedded.
+    """
+
+    header = build_context_header(
+        course_code=course_code,
+        course_name=course_name,
+        credits=credits,
+        section=section,
+        unit=unit
+    )
+
+    if header:
+
+        return (
+            f"{header}\n\n"
+            f"{chunk}"
+        )
 
     return chunk
 
+
+# =========================================================
+# CHUNKING
+# =========================================================
 
 def create_context_aware_chunks(pages):
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=2000,
         chunk_overlap=300,
-        separators=["\n\n", "\n", ". ", " ", ""]
+        separators=[
+            "\n\n",
+            "\n",
+            ". ",
+            " ",
+            ""
+        ]
     )
 
     chunks = []
 
+    # -----------------------------------------------------
+    # Persistent course/section state
+    # -----------------------------------------------------
+
     current_course_code = None
     current_course_name = None
+    current_credits = None
+
+    current_section = None
     current_unit = None
+
+    # -----------------------------------------------------
+    # Process every PDF page
+    # -----------------------------------------------------
 
     for page in pages:
 
-        text = page["text"]
+        original_text = clean_text(
+            page["text"]
+        )
 
-        course_code, course_name = detect_course(text)
+        # -------------------------------------------------
+        # Detect a new course BEFORE removing headers.
+        # -------------------------------------------------
+
+        course_code, course_name = detect_course(
+            original_text
+        )
 
         if course_code:
+
             current_course_code = course_code
             current_course_name = course_name
+
+            detected_credits = detect_credits(
+                original_text
+            )
+
+            if detected_credits:
+                current_credits = detected_credits
+
+            # New course means previous section context
+            # must not carry into the new course.
+            current_section = None
             current_unit = None
 
-        units = list(UNIT_PATTERN.finditer(text))
+        # -------------------------------------------------
+        # Clean repeated PDF headers
+        # -------------------------------------------------
 
-        if not units:
+        text = remove_repeated_headers(
+            original_text
+        )
 
-            page_chunks = text_splitter.split_text(text)
+        if not text:
+            continue
+
+        # -------------------------------------------------
+        # Find sections on this page
+        # -------------------------------------------------
+
+        sections = find_sections(text)
+
+        # =================================================
+        # CASE 1:
+        # No section heading on this page
+        # =================================================
+
+        if not sections:
+
+            page_chunks = text_splitter.split_text(
+                text
+            )
 
             for chunk in page_chunks:
 
-                enriched_text = create_enriched_text(
-                    current_course_code,
-                    current_course_name,
-                    current_unit,
-                    chunk
-                )
+                # -----------------------------------------
+                # If we have an active course and section,
+                # this is a continuation page.
+                # -----------------------------------------
 
-                chunks.append({
-                    "source": page["source"],
-                    "page": page["page"],
-                    "course_code": current_course_code,
-                    "course_name": current_course_name,
-                    "unit": current_unit,
-                    "text": enriched_text
-                })
+                if current_course_code:
 
-        else:
+                    section = current_section
 
-            for i, unit_match in enumerate(units):
+                    unit = current_unit
 
-                current_unit = f"UNIT {unit_match.group(1)}"
+                    # If there is no known section yet,
+                    # treat it as course information.
+                    if section is None:
 
-                start = unit_match.start()
+                        section = (
+                            "COURSE INFORMATION"
+                        )
 
-                if i + 1 < len(units):
-                    end = units[i + 1].start()
-                else:
-                    end = len(text)
-
-                unit_text = text[start:end]
-
-                page_chunks = text_splitter.split_text(unit_text)
-
-                for chunk in page_chunks:
-
-                    enriched_text = create_enriched_text(
-                        current_course_code,
-                        current_course_name,
-                        current_unit,
-                        chunk
+                    enriched_text = enrich_chunk(
+                        chunk,
+                        course_code=current_course_code,
+                        course_name=current_course_name,
+                        credits=current_credits,
+                        section=section,
+                        unit=unit
                     )
 
                     chunks.append({
@@ -128,35 +430,252 @@ def create_context_aware_chunks(pages):
                         "page": page["page"],
                         "course_code": current_course_code,
                         "course_name": current_course_name,
-                        "unit": current_unit,
+                        "credits": current_credits,
+                        "section": section,
+                        "unit": unit,
                         "text": enriched_text
                     })
 
+                else:
+
+                    # -------------------------------------
+                    # No course detected yet.
+                    # This is document-level information.
+                    # -------------------------------------
+
+                    enriched_text = enrich_chunk(
+                        chunk,
+                        section="DOCUMENT INFORMATION"
+                    )
+
+                    chunks.append({
+                        "source": page["source"],
+                        "page": page["page"],
+                        "course_code": None,
+                        "course_name": None,
+                        "credits": None,
+                        "section": "DOCUMENT INFORMATION",
+                        "unit": None,
+                        "text": enriched_text
+                    })
+
+            continue
+
+        # =================================================
+        # CASE 2:
+        # Page contains one or more sections
+        # =================================================
+
+        first_section_start = sections[0][2]
+
+        # -------------------------------------------------
+        # Content before the first section
+        # -------------------------------------------------
+
+        pre_section_text = text[
+            :first_section_start
+        ].strip()
+
+        if pre_section_text:
+
+            pre_chunks = text_splitter.split_text(
+                pre_section_text
+            )
+
+            for chunk in pre_chunks:
+
+                if current_course_code:
+
+                    # If this is a course page, this is
+                    # course-level information.
+                    section = (
+                        "COURSE INFORMATION"
+                    )
+
+                    enriched_text = enrich_chunk(
+                        chunk,
+                        course_code=current_course_code,
+                        course_name=current_course_name,
+                        credits=current_credits,
+                        section=section
+                    )
+
+                    chunks.append({
+                        "source": page["source"],
+                        "page": page["page"],
+                        "course_code": current_course_code,
+                        "course_name": current_course_name,
+                        "credits": current_credits,
+                        "section": section,
+                        "unit": None,
+                        "text": enriched_text
+                    })
+
+                else:
+
+                    # -------------------------------------
+                    # Document introduction
+                    # -------------------------------------
+
+                    enriched_text = enrich_chunk(
+                        chunk,
+                        section="DOCUMENT INFORMATION"
+                    )
+
+                    chunks.append({
+                        "source": page["source"],
+                        "page": page["page"],
+                        "course_code": None,
+                        "course_name": None,
+                        "credits": None,
+                        "section": "DOCUMENT INFORMATION",
+                        "unit": None,
+                        "text": enriched_text
+                    })
+
+        # -------------------------------------------------
+        # Process every section found on the page
+        # -------------------------------------------------
+
+        for i, section_info in enumerate(sections):
+
+            section_type, unit_name, start = (
+                section_info
+            )
+
+            # Determine where this section ends.
+            if i + 1 < len(sections):
+
+                end = sections[i + 1][2]
+
+            else:
+
+                end = len(text)
+
+            section_text = text[
+                start:end
+            ].strip()
+
+            if not section_text:
+                continue
+
+            # ---------------------------------------------
+            # Update persistent section state.
+            #
+            # This is important for continuation pages.
+            # ---------------------------------------------
+
+            current_section = section_type
+            current_unit = unit_name
+
+            section_chunks = text_splitter.split_text(
+                section_text
+            )
+
+            for chunk in section_chunks:
+
+                enriched_text = enrich_chunk(
+                    chunk,
+                    course_code=current_course_code,
+                    course_name=current_course_name,
+                    credits=current_credits,
+                    section=section_type,
+                    unit=unit_name
+                )
+
+                chunks.append({
+                    "source": page["source"],
+                    "page": page["page"],
+                    "course_code": current_course_code,
+                    "course_name": current_course_name,
+                    "credits": current_credits,
+                    "section": section_type,
+                    "unit": unit_name,
+                    "text": enriched_text
+                })
+
     return chunks
 
+
+# =========================================================
+# TEST / DEBUG
+# =========================================================
 
 if __name__ == "__main__":
 
     pages = load_all_pdfs()
 
-    chunks = create_context_aware_chunks(pages)
+    chunks = create_context_aware_chunks(
+        pages
+    )
 
     print("\n==============================")
-    print("CONTEXT-AWARE CHUNKING")
+    print("SECTION-AWARE CHUNKING")
     print("==============================")
 
-    print("Total pages:", len(pages))
-    print("Total chunks:", len(chunks))
+    print(
+        "Total pages:",
+        len(pages)
+    )
 
-    for i, chunk in enumerate(chunks[:5], start=1):
+    print(
+        "Total chunks:",
+        len(chunks)
+    )
 
-        print("\n-----------------------------")
-        print("Chunk:", i)
-        print("Source:", chunk["source"])
-        print("Page:", chunk["page"])
-        print("Course Code:", chunk["course_code"])
-        print("Course Name:", chunk["course_name"])
-        print("Unit:", chunk["unit"])
-        print("-----------------------------")
+    for i, chunk in enumerate(
+        chunks[:15],
+        start=1
+    ):
 
-        print(chunk["text"])
+        print(
+            "\n-----------------------------"
+        )
+
+        print(
+            "Chunk:",
+            i
+        )
+
+        print(
+            "Source:",
+            chunk["source"]
+        )
+
+        print(
+            "Page:",
+            chunk["page"]
+        )
+
+        print(
+            "Course Code:",
+            chunk["course_code"]
+        )
+
+        print(
+            "Course Name:",
+            chunk["course_name"]
+        )
+
+        print(
+            "Credits:",
+            chunk["credits"]
+        )
+
+        print(
+            "Section:",
+            chunk["section"]
+        )
+
+        print(
+            "Unit:",
+            chunk["unit"]
+        )
+
+        print(
+            "-----------------------------"
+        )
+
+        print(
+            chunk["text"]
+        )

@@ -304,7 +304,7 @@ Make sure you have:
 ## 1️⃣ Clone the Repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone https://github.com/IrfanAhamedAlikulJamath/University_Chatbot.git
 cd University_Chatbot
 ```
 

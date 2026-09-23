@@ -1,39 +1,71 @@
 import chromadb
-from sentence_transformers import SentenceTransformer
 
 from pdf_loader import load_all_pdfs
 from text_processor import create_context_aware_chunks
+from embeddings import generate_embeddings
 
 
-MODEL_NAME = "all-MiniLM-L6-v2"
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
 CHROMA_PATH = "data/chroma"
+
 COLLECTION_NAME = "university_documents"
 
 
-def create_vector_store():
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    # -----------------------------------------------------
+    # 1. Load PDF documents
+    # -----------------------------------------------------
 
     print("Loading PDF documents...")
 
     pages = load_all_pdfs()
 
-    print("Creating context-aware chunks...")
-
-    chunks = create_context_aware_chunks(pages)
-
-    print("Total chunks:", len(chunks))
-
-    print("\nLoading embedding model...")
-
-    model = SentenceTransformer(MODEL_NAME)
-
-    texts = [chunk["text"] for chunk in chunks]
-
-    print("Generating embeddings...")
-
-    embeddings = model.encode(
-        texts,
-        show_progress_bar=True
+    print(
+        f"Pages extracted: {len(pages)}"
     )
+
+
+    # -----------------------------------------------------
+    # 2. Create context-aware chunks
+    # -----------------------------------------------------
+
+    print("\nCreating context-aware chunks...")
+
+    chunks = create_context_aware_chunks(
+        pages
+    )
+
+    print(
+        f"Total chunks: {len(chunks)}"
+    )
+
+
+    # -----------------------------------------------------
+    # 3. Generate embeddings
+    # -----------------------------------------------------
+
+    print("\nGenerating embeddings...")
+
+    embeddings = generate_embeddings(
+        chunks
+    )
+
+    print(
+        f"Generated {len(embeddings)} embeddings."
+    )
+
+
+    # -----------------------------------------------------
+    # 4. Connect to ChromaDB
+    # -----------------------------------------------------
 
     print("\nConnecting to ChromaDB...")
 
@@ -41,47 +73,143 @@ def create_vector_store():
         path=CHROMA_PATH
     )
 
-    collection = client.get_or_create_collection(
+
+    # -----------------------------------------------------
+    # 5. Delete old collection
+    # -----------------------------------------------------
+
+    print(
+        "\nRemoving old collection if it exists..."
+    )
+
+    try:
+
+        client.delete_collection(
+            name=COLLECTION_NAME
+        )
+
+        print("Old collection deleted.")
+
+    except Exception:
+
+        print(
+            "No existing collection found."
+        )
+
+
+    # -----------------------------------------------------
+    # 6. Create fresh collection
+    # -----------------------------------------------------
+
+    print(
+        "\nCreating new ChromaDB collection..."
+    )
+
+    collection = client.create_collection(
         name=COLLECTION_NAME
     )
 
-    print("Storing documents in ChromaDB...")
+
+    # -----------------------------------------------------
+    # 7. Create IDs
+    # -----------------------------------------------------
 
     ids = [
         f"chunk_{i}"
         for i in range(len(chunks))
     ]
 
-    documents = [
-        chunk["text"]
-        for chunk in chunks
-    ]
 
-    metadatas = [
-        {
-            "source": chunk["source"],
-            "page": chunk["page"],
-            "course_code": chunk["course_code"] or "",
-            "course_name": chunk["course_name"] or "",
-            "unit": chunk["unit"] or ""
+    # -----------------------------------------------------
+    # 8. Prepare metadata
+    # -----------------------------------------------------
+
+    metadatas = []
+
+    for chunk in chunks:
+
+        metadata = {
+            "source": str(
+                chunk["source"]
+            ),
+
+            "page": int(
+                chunk["page"]
+            ),
+
+            "course_code": (
+                chunk["course_code"]
+                or ""
+            ),
+
+            "course_name": (
+                chunk["course_name"]
+                or ""
+            ),
+
+            "credits": (
+                chunk["credits"]
+                or ""
+            ),
+
+            "section": (
+                chunk["section"]
+                or ""
+            ),
+
+            "unit": (
+                chunk["unit"]
+                or ""
+            )
         }
-        for chunk in chunks
-    ]
+
+        metadatas.append(
+            metadata
+        )
+
+
+    # -----------------------------------------------------
+    # 9. Store everything in ChromaDB
+    # -----------------------------------------------------
+
+    print(
+        "\nStoring documents in ChromaDB..."
+    )
 
     collection.add(
         ids=ids,
-        documents=documents,
+        documents=[
+            chunk["text"]
+            for chunk in chunks
+        ],
         embeddings=embeddings.tolist(),
         metadatas=metadatas
     )
+
+
+    # -----------------------------------------------------
+    # 10. Verify
+    # -----------------------------------------------------
 
     print("\n==============================")
     print("VECTOR STORE CREATED")
     print("==============================")
 
-    print("Collection:", COLLECTION_NAME)
-    print("Documents stored:", collection.count())
+    print(
+        "Collection:",
+        COLLECTION_NAME
+    )
 
+    print(
+        "Documents stored:",
+        collection.count()
+    )
+
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
-    create_vector_store()
+
+    main()
